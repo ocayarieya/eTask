@@ -19,3 +19,9 @@ func Async(f func()) {
 
 	go f()
 }
+
+func Assert(fn func() bool, msg string) {
+	if !fn() {
+		panic(msg)
+	}
+}

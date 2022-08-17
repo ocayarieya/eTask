@@ -42,7 +42,7 @@ func NewRedisBroker(client *redis.Client) *RedisBroker {
 }
 
 func (r *RedisBroker) Enqueue(msg message.Message) error {
-	if err := r.pool.Add(msg); err != nil {
+	if err := r.HSet(msg); err != nil {
 		return err
 	}
 
@@ -53,16 +53,12 @@ func (r *RedisBroker) Enqueue(msg message.Message) error {
 	}
 }
 
-func (r *RedisBroker) Dequeue() (*message.Message, error) {
-	res, err := r.client.BLPop(time.Second*2, r.name).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, ErrNoMessage
-		}
-		return nil, err
-	}
+func (r *RedisBroker) HSet(msg message.Message) error {
+	return r.pool.Add(msg)
+}
 
-	buf, err := r.pool.Get(res[1])
+func (r *RedisBroker) HGet(key string) (*message.Message, error) {
+	buf, err := r.pool.Get(key)
 	if err != nil {
 		return nil, err
 	}
@@ -75,10 +71,20 @@ func (r *RedisBroker) Dequeue() (*message.Message, error) {
 	return msg, nil
 }
 
-func (r *RedisBroker) addDelayTask(msg message.Message) error {
-	bucket := r.getBucket(msg.ID)
+func (r *RedisBroker) Dequeue() (*message.Message, error) {
+	res, err := r.client.BRPop(time.Second*2, r.name).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrNoMessage
+		}
+		return nil, err
+	}
 
-	if err := bucket.Add(msg.ID, msg.TTl); err != nil {
+	return r.HGet(res[1])
+}
+
+func (r *RedisBroker) addDelayTask(msg message.Message) error {
+	if err := r.getBucket(msg.ID).Add(msg.ID, msg.TTl); err != nil {
 		return err
 	}
 

@@ -34,7 +34,7 @@ func main() {
 	)
 
 	// register a task
-	client.Add("sum", sum)
+	client.Add("sum", sum, nil)
 
 	// run worker and set max
 	client.Run(10)

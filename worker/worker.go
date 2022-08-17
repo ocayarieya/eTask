@@ -7,7 +7,6 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -25,15 +24,21 @@ const (
 var (
 	ErrMaxTasksReached = errors.New("max tasks reached")
 	ErrTaskExpired     = errors.New("task expired")
+	ErrNotFunction     = errors.New("not a function")
 )
 
 var log = logger.GetLogger()
+
+type FuncWorker struct {
+	fn interface{} // task func
+	cb interface{} // callback func
+}
 
 type Worker struct {
 	id            string
 	broker        broker.Broker
 	backend       backend.Backend
-	tasks         map[string]interface{}
+	tasks         map[string]FuncWorker
 	lock          sync.RWMutex
 	limitInterval time.Duration
 	done          chan struct{}
@@ -46,7 +51,7 @@ func New(b broker.Broker, backend backend.Backend, opts ...Option) *Worker {
 		id:            utils.GetUUID(),
 		broker:        b,
 		backend:       backend,
-		tasks:         make(map[string]interface{}),
+		tasks:         make(map[string]FuncWorker),
 		done:          make(chan struct{}),
 		limitInterval: 5 * time.Second,
 		errHandler: func(msg *message.Message, err error) {
@@ -62,12 +67,19 @@ func New(b broker.Broker, backend backend.Backend, opts ...Option) *Worker {
 }
 
 // Add adds a task to the worker.
-func (w *Worker) Add(name string, fn interface{}) error {
+func (w *Worker) Add(name string, fn interface{}, callback interface{}) error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 
+	utils.Assert(func() bool {
+		return reflect.TypeOf(fn).Kind() == reflect.Func
+	}, "task must be a func")
+
 	if _, ok := w.tasks[name]; !ok {
-		w.tasks[name] = fn
+		w.tasks[name] = FuncWorker{
+			fn: fn,
+			cb: callback,
+		}
 		return nil
 	}
 
@@ -75,13 +87,13 @@ func (w *Worker) Add(name string, fn interface{}) error {
 }
 
 // GetTaskByName returns the task by name.
-func (w *Worker) GetTaskByName(name string) interface{} {
+func (w *Worker) GetTaskByName(name string) FuncWorker {
 	w.lock.RLock()
 	defer w.lock.RUnlock()
 
 	task, ok := w.tasks[name]
 	if !ok {
-		return nil
+		return FuncWorker{}
 	}
 
 	return task
@@ -96,19 +108,14 @@ func (w *Worker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			var (
-				err error
-				msg *message.Message
-			)
-
 			// dequeue a task
-			msg, err = w.broker.Dequeue()
+			msg, err := w.broker.Dequeue()
 			if err != nil || msg == nil {
 				log.Errorf("fetch task from %s err: %v", w.broker.Scheme(), err)
 				continue
 			}
 
-			err = w.envoke(msg)
+			out, err := w.consume(msg.NameSpace, msg.NextJobId, msg.Args...)
 			if err != nil {
 				if msg.Retry > 0 && !errors.Is(err, ErrTaskExpired) {
 					w.createDelayTask(msg)
@@ -119,44 +126,25 @@ func (w *Worker) run(ctx context.Context) {
 				continue
 			}
 
+			msg.Out = out
+
 			log.Infof("Envoke task(%s) success.", msg.ID)
 			w.backend.UpdateTask(msg, backend.TaskStatusDone)
 		}
 	}
 }
 
-// envoke a task
-func (w *Worker) envoke(msg *message.Message) (err error) {
-	defer func() {
-		if err := recover(); err != nil {
-			msg.Stackback = string(debug.Stack())
-			log.Errorf("envoke task(%s) error: %v", msg.ID, err)
-		}
-	}()
-
-	// check expired task
-	// if msg.TTl > 0 && int64(time.Since(msg.CreatedAt).Seconds()) > msg.TTl {
-	// 	log.Infof("task(%s) expired", msg.ID)
-	// 	return ErrTaskExpired
-	// }
-
-	fn := w.GetTaskByName(msg.NameSpace)
-	if fn == nil {
-		return fmt.Errorf("task %s not found", msg.NameSpace)
+// consum a message and envoke a task
+func (w *Worker) consume(namespace string, nextJobId string, kwargs ...interface{}) ([]interface{}, error) {
+	funcWorker := w.GetTaskByName(namespace)
+	if funcWorker.fn == nil {
+		return nil, fmt.Errorf("task %s not found", namespace)
 	}
 
-	fnValue := reflect.ValueOf(fn)
-	if fnValue.Kind() != reflect.Func {
-		return fmt.Errorf("task(%s) is not a function", msg.ID)
-	}
+	t := reflect.ValueOf(funcWorker.fn).Type()
 
-	t := fnValue.Type()
-	if len(msg.Args) != t.NumIn() {
-		return fmt.Errorf("task(%s) argument count mismatch, required %d got %d", msg.ID, t.NumIn(), len(msg.Args))
-	}
-
-	args := make([]reflect.Value, len(msg.Args))
-	for i, v := range msg.Args {
+	args := make([]reflect.Value, len(kwargs))
+	for i, v := range kwargs {
 		inValue := reflect.ValueOf(v)
 		requiredType := t.In(i).Kind()
 
@@ -166,18 +154,53 @@ func (w *Worker) envoke(msg *message.Message) (err error) {
 		}
 
 		if inValue.Type().Kind() != requiredType {
-			return fmt.Errorf("Task(%s) argument type mismatch, required %v got %v", msg.ID, t.In(i), inValue.Type())
+			return nil, fmt.Errorf("argument type mismatch, required %v got %v", t.In(i), inValue.Type())
 		}
 
 		args[i] = inValue
 	}
 
-	res := fnValue.Call(args)
-	if len(res) > 0 {
-		msg.Out = w.parseResult(res)
+	res, err := w.invoke(funcWorker.fn, funcWorker.cb, args)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil
+	if nextJobId != "" {
+		nextJob, err := w.broker.HGet(nextJobId)
+		if err != nil {
+			return nil, err
+		}
+
+		return w.consume(nextJob.NameSpace, nextJob.NextJobId, w.parseResult(res))
+	}
+
+	return w.parseResult(res), nil
+}
+
+// envoke a task
+func (w *Worker) invoke(fn interface{}, cb interface{}, args []reflect.Value) ([]reflect.Value, error) {
+	fnValue := reflect.ValueOf(fn)
+	if fnValue.Kind() != reflect.Func {
+		return nil, ErrNotFunction
+	}
+
+	t := fnValue.Type()
+	if len(args) != t.NumIn() {
+		return nil, fmt.Errorf("argument count mismatch, required %d got %d", t.NumIn(), len(args))
+	}
+
+	res := fnValue.Call(args)
+
+	// call callback function
+	if cb != nil {
+		if reflect.TypeOf(cb).NumIn() > 0 {
+			return w.invoke(cb, nil, res)
+		}
+
+		return w.invoke(cb, nil, []reflect.Value{})
+	}
+
+	return res, nil
 }
 
 func (w *Worker) parseResult(outs []reflect.Value) []interface{} {

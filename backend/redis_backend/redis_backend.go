@@ -33,5 +33,6 @@ func (r *RedisBackend) UpdateTask(msg *message.Message, status backend.TaskStatu
 
 // GetTask returns a task result from the backend asynchronously.
 func (r *RedisBackend) GetResult(ctx context.Context, key string) ([]byte, error) {
+	<-ctx.Done()
 	return r.pool.Get(key)
 }

@@ -12,32 +12,34 @@ func sum(a, b int) int {
 	return a + b
 }
 
-func division(a, b int) int {
-	return a / b
-}
-
-func TestEnvoke(t *testing.T) {
+func TestConsume(t *testing.T) {
 	assert := assert.New(t)
 
 	worker := New(nil, nil)
-	worker.Add("sum", sum)
+	worker.Add("sum", sum, nil)
 
-	var msg message.Message
-	json.Unmarshal([]byte("{\"id\":\"2c0f98da-28d4-4a71-831a-c56bcdebe3af\",\"namespace\":\"sum\",\"args\":[1,2],\"created_at\":\"2022-08-16T12:34:11.6716804+08:00\",\"ttl\":0,\"result\":null,\"callback\":null,\"retry\":0,\"execution_time\":0,\"status\":0,\"stackback\":\"\"}"), &msg)
+	var msg *message.Message
+	assert.Nil(json.Unmarshal([]byte("{\"id\":\"2c0f98da-28d4-4a71-831a-c56bcdebe3af\",\"namespace\":\"sum\",\"args\":[1,2],\"created_at\":\"2022-08-16T12:34:11.6716804+08:00\",\"ttl\":0,\"result\":null,\"callback\":null,\"retry\":0,\"execution_time\":0,\"status\":0,\"stackback\":\"\"}"), &msg))
 
-	err := worker.envoke(&msg)
+	out, err := worker.consume(msg.NameSpace, msg.NextJobId, msg.Args...)
 	assert.Nil(err)
-	assert.Equal(int64(3), msg.Out[0])
+	assert.Equal(int64(3), out[0])
 }
 
-func TestEnvokeError(t *testing.T) {
+func TestCallback(t *testing.T) {
 	assert := assert.New(t)
 
-	msg := message.NewMessage("division", []interface{}{1, 0})
+	fn := func(a int) int {
+		return a + 1
+	}
 
 	worker := New(nil, nil)
-	worker.Add("division", division)
+	worker.Add("sum", sum, fn)
 
-	err := worker.envoke(msg)
-	assert.NotNil(err)
+	var msg *message.Message
+	assert.Nil(json.Unmarshal([]byte("{\"id\":\"2c0f98da-28d4-4a71-831a-c56bcdebe3af\",\"namespace\":\"sum\",\"args\":[1,2],\"created_at\":\"2022-08-16T12:34:11.6716804+08:00\",\"ttl\":0,\"result\":null,\"callback\":null,\"retry\":0,\"execution_time\":0,\"status\":0,\"stackback\":\"\"}"), &msg))
+
+	out, err := worker.consume(msg.NameSpace, msg.NextJobId, msg.Args...)
+	assert.Nil(err)
+	assert.Equal(int64(4), out[0])
 }

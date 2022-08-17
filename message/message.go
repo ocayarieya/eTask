@@ -26,6 +26,7 @@ type Message struct {
 	ExecutionTime int64         `json:"execution_time"`
 	Status        int           `json:"status"`
 	Stackback     string        `json:"stackback"`
+	NextJobId     string        `json:"next_job_id"`
 }
 
 func NewMessage(nameSpace string, args []interface{}, opts ...Option) *Message {

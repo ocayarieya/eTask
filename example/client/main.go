@@ -8,6 +8,7 @@ import (
 	"github.com/KKKKjl/eTask/broker/redis_broker"
 	"github.com/KKKKjl/eTask/client"
 	"github.com/KKKKjl/eTask/message"
+	"github.com/KKKKjl/eTask/workflow"
 	"github.com/go-redis/redis"
 )
 
@@ -29,8 +30,18 @@ func main() {
 		redis_backend.NewRedisBackend(rdb),
 	)
 
-	// invoke and wait for response
+	// create a pipeline
+	pipeline := workflow.NewPipeliner(
+		message.NewMessage("sum", []interface{}{1, 2}),
+		message.NewMessage("sum", []interface{}{}),
+	)
+
 	var result message.Message
+	if err := client.PipelineAsync(context.Background(), pipeline).Result(&result); err != nil {
+		panic(err)
+	}
+
+	// invoke and wait for response
 	if err := client.EnsureAsync(context.Background(), "sum", []interface{}{1, 2}, message.WithTTl(20)).Result(&result); err != nil {
 		panic(err)
 	}
