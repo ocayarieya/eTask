@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/KKKKjl/eTask/message"
-	"github.com/KKKKjl/eTask/pool"
+	"github.com/KKKKjl/eTask/backend"
+	"github.com/KKKKjl/eTask/internal/pool"
+	"github.com/KKKKjl/eTask/internal/task"
 	"github.com/go-redis/redis"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -16,7 +18,8 @@ const (
 )
 
 var (
-	ErrNoMessage = errors.New("no message")
+	ErrNoMessage         = errors.New("no message")
+	ErrGroupNotCompleted = errors.New("group task not completed")
 )
 
 type RedisBroker struct {
@@ -24,6 +27,11 @@ type RedisBroker struct {
 	buckets []*DelayBucket
 	pool    *pool.Pool
 	name    string
+}
+
+type GroupMetaData struct {
+	UUID     string   `json:"uuid"`
+	JobUUIDS []string `json:"job_uuids"`
 }
 
 func NewRedisBroker(client *redis.Client) *RedisBroker {
@@ -41,7 +49,7 @@ func NewRedisBroker(client *redis.Client) *RedisBroker {
 	}
 }
 
-func (r *RedisBroker) Enqueue(msg message.Message) error {
+func (r *RedisBroker) Enqueue(msg task.Message) error {
 	if err := r.HSet(msg); err != nil {
 		return err
 	}
@@ -53,17 +61,17 @@ func (r *RedisBroker) Enqueue(msg message.Message) error {
 	}
 }
 
-func (r *RedisBroker) HSet(msg message.Message) error {
-	return r.pool.Add(msg)
+func (r *RedisBroker) HSet(msg task.Message) error {
+	return r.pool.Add(msg.ID, msg)
 }
 
-func (r *RedisBroker) HGet(key string) (*message.Message, error) {
+func (r *RedisBroker) HGet(key string) (*task.Message, error) {
 	buf, err := r.pool.Get(key)
 	if err != nil {
 		return nil, err
 	}
 
-	msg := &message.Message{}
+	msg := &task.Message{}
 	if err := json.Unmarshal(buf, msg); err != nil {
 		return nil, err
 	}
@@ -71,7 +79,7 @@ func (r *RedisBroker) HGet(key string) (*message.Message, error) {
 	return msg, nil
 }
 
-func (r *RedisBroker) Dequeue() (*message.Message, error) {
+func (r *RedisBroker) Dequeue() (*task.Message, error) {
 	res, err := r.client.BRPop(time.Second*2, r.name).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -83,7 +91,67 @@ func (r *RedisBroker) Dequeue() (*message.Message, error) {
 	return r.HGet(res[1])
 }
 
-func (r *RedisBroker) addDelayTask(msg message.Message) error {
+func (r *RedisBroker) CreateGroup(groupUUID string, uuids []string) error {
+	group := &GroupMetaData{
+		UUID:     groupUUID,
+		JobUUIDS: uuids,
+	}
+
+	return r.pool.Add(groupUUID, group)
+}
+
+func (r *RedisBroker) GetGroupInfo(groupUUID string) (*GroupMetaData, error) {
+	buf, err := r.pool.Get(groupUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	group := &GroupMetaData{}
+	if err := json.Unmarshal(buf, group); err != nil {
+		return nil, err
+	}
+
+	return group, nil
+}
+
+func (r *RedisBroker) IsGroupTaskCompleted(groupUUID string) (bool, error) {
+	group, err := r.GetGroupInfo(groupUUID)
+	if err != nil {
+		return false, err
+	}
+
+	var g errgroup.Group
+
+	for _, uuid := range group.JobUUIDS {
+		uuid := uuid
+
+		g.Go(func() error {
+			buf, err := r.pool.Get(uuid)
+			if err != nil {
+				return err
+			}
+
+			msg := &task.Message{}
+			if err := json.Unmarshal(buf, msg); err != nil {
+				return err
+			}
+
+			if msg.Status != int(backend.TaskStatusDone) {
+				return ErrGroupNotCompleted
+			}
+
+			return nil
+		})
+	}
+
+	return g.Wait() == nil, nil
+}
+
+func (r *RedisBroker) DeleteGroup(groupUUID string) error {
+	return r.pool.Delete(groupUUID)
+}
+
+func (r *RedisBroker) addDelayTask(msg task.Message) error {
 	if err := r.getBucket(msg.ID).Add(msg.ID, msg.TTl); err != nil {
 		return err
 	}

@@ -15,6 +15,10 @@ func sum(a, b int) int {
 	return a + b
 }
 
+func multiply(a, b int) int {
+	return a * b
+}
+
 func main() {
 	// create a redis client
 	rdb := redis.NewClient(&redis.Options{
@@ -33,11 +37,12 @@ func main() {
 		redis_backend.NewRedisBackend(rdb),
 	)
 
-	// register a task
+	// register tasks
 	client.Add("sum", sum, nil)
+	client.Add("multiply", multiply, nil)
 
 	// run worker and set max
-	client.Run(10)
+	client.Run(2)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/KKKKjl/eTask/timer"
+	"github.com/KKKKjl/eTask/internal/timer"
 	"github.com/go-redis/redis"
 )
 

@@ -12,9 +12,10 @@ import (
 
 	"github.com/KKKKjl/eTask/backend"
 	"github.com/KKKKjl/eTask/broker"
-	"github.com/KKKKjl/eTask/logger"
-	"github.com/KKKKjl/eTask/message"
-	"github.com/KKKKjl/eTask/utils"
+	"github.com/KKKKjl/eTask/internal/logger"
+	"github.com/KKKKjl/eTask/internal/task"
+	"github.com/KKKKjl/eTask/internal/utils"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -26,8 +27,6 @@ var (
 	ErrTaskExpired     = errors.New("task expired")
 	ErrNotFunction     = errors.New("not a function")
 )
-
-var log = logger.GetLogger()
 
 type FuncWorker struct {
 	fn interface{} // task func
@@ -43,7 +42,8 @@ type Worker struct {
 	limitInterval time.Duration
 	done          chan struct{}
 	once          sync.Once
-	errHandler    func(msg *message.Message, err error)
+	logger        *logrus.Logger
+	errHandler    func(msg *task.Message, err error)
 }
 
 func New(b broker.Broker, backend backend.Backend, opts ...Option) *Worker {
@@ -54,9 +54,7 @@ func New(b broker.Broker, backend backend.Backend, opts ...Option) *Worker {
 		tasks:         make(map[string]FuncWorker),
 		done:          make(chan struct{}),
 		limitInterval: 5 * time.Second,
-		errHandler: func(msg *message.Message, err error) {
-			log.Errorf("envoke task(%s) error: %v", msg.ID, err)
-		},
+		logger:        logger.GetLogger(),
 	}
 
 	for _, opt := range opts {
@@ -67,7 +65,7 @@ func New(b broker.Broker, backend backend.Backend, opts ...Option) *Worker {
 }
 
 // Add adds a task to the worker.
-func (w *Worker) Add(name string, fn interface{}, callback interface{}) error {
+func (w *Worker) Add(name string, fn interface{}, cb interface{}) error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 
@@ -75,10 +73,16 @@ func (w *Worker) Add(name string, fn interface{}, callback interface{}) error {
 		return reflect.TypeOf(fn).Kind() == reflect.Func
 	}, "task must be a func")
 
+	if cb != nil {
+		utils.Assert(func() bool {
+			return reflect.TypeOf(cb).Kind() == reflect.Func
+		}, "callback must be a func")
+	}
+
 	if _, ok := w.tasks[name]; !ok {
 		w.tasks[name] = FuncWorker{
 			fn: fn,
-			cb: callback,
+			cb: cb,
 		}
 		return nil
 	}
@@ -111,9 +115,11 @@ func (w *Worker) run(ctx context.Context) {
 			// dequeue a task
 			msg, err := w.broker.Dequeue()
 			if err != nil || msg == nil {
-				log.Errorf("fetch task from %s err: %v", w.broker.Scheme(), err)
+				w.logger.Errorf("fetch task from %s err: %v", w.broker.Scheme(), err)
 				continue
 			}
+
+			w.logger.Debugf("got message: id(%s), namespace(%s), group(%s), nextJob(%s)", msg.ID, msg.NameSpace, msg.GroupId, msg.NextJobId)
 
 			out, err := w.consume(msg.NameSpace, msg.NextJobId, msg.Args...)
 			if err != nil {
@@ -121,21 +127,29 @@ func (w *Worker) run(ctx context.Context) {
 					w.createDelayTask(msg)
 				}
 
-				w.errHandler(msg, err)
-				w.backend.UpdateTask(msg, backend.TaskStatusError)
+				if w.errHandler != nil {
+					w.errHandler(msg, err)
+				}
+
+				w.logger.Errorf("consume task %s err: %v", msg.ID, err)
+
+				w.markAsFailed(msg)
 				continue
 			}
 
-			msg.Out = out
-
-			log.Infof("Envoke task(%s) success.", msg.ID)
-			w.backend.UpdateTask(msg, backend.TaskStatusDone)
+			w.markAsSuccess(msg, out)
 		}
 	}
 }
 
 // consum a message and envoke a task
 func (w *Worker) consume(namespace string, nextJobId string, kwargs ...interface{}) ([]interface{}, error) {
+	defer func() {
+		if err := recover(); err != nil {
+			w.logger.Errorf("captured panic: %v", err)
+		}
+	}()
+
 	funcWorker := w.GetTaskByName(namespace)
 	if funcWorker.fn == nil {
 		return nil, fmt.Errorf("task %s not found", namespace)
@@ -149,7 +163,7 @@ func (w *Worker) consume(namespace string, nextJobId string, kwargs ...interface
 		requiredType := t.In(i).Kind()
 
 		// NOTE: JSON unmarshal will convert all numeric types to float64.
-		if requiredType == reflect.Int {
+		if requiredType == reflect.Int && inValue.Kind() == reflect.Float64 {
 			inValue = reflect.ValueOf(int(v.(float64)))
 		}
 
@@ -165,13 +179,20 @@ func (w *Worker) consume(namespace string, nextJobId string, kwargs ...interface
 		return nil, err
 	}
 
+	// if nextJob is not nil, it means the task is a chain task.
 	if nextJobId != "" {
 		nextJob, err := w.broker.HGet(nextJobId)
 		if err != nil {
 			return nil, err
 		}
 
-		return w.consume(nextJob.NameSpace, nextJob.NextJobId, w.parseResult(res))
+		input := w.parseResult(res)
+
+		nextJobArgs := make([]interface{}, 0, len(nextJob.Args)+len(input))
+		nextJobArgs = append(nextJobArgs, nextJob.Args...)
+		nextJobArgs = append(nextJobArgs, input...)
+
+		return w.consume(nextJob.NameSpace, nextJob.NextJobId, nextJobArgs)
 	}
 
 	return w.parseResult(res), nil
@@ -230,7 +251,7 @@ func (w *Worker) getRealValue(t reflect.Value) interface{} {
 	}
 }
 
-func (w *Worker) createDelayTask(retryTask *message.Message) {
+func (w *Worker) createDelayTask(retryTask *task.Message) {
 	if retryTask.Retry <= 0 {
 		return
 	}
@@ -248,7 +269,7 @@ func (w *Worker) createDelayTask(retryTask *message.Message) {
 	// submit delay task
 	w.broker.Enqueue(*retryTask)
 
-	log.Infof("create delaytask for task(%s)", retryTask.ID)
+	w.logger.Debugf("create delaytask for task(%s)", retryTask.ID)
 }
 
 // Run starts the worker.(non-blocking)
@@ -296,6 +317,45 @@ func (w *Worker) Stop() {
 }
 
 // SetErrorHandler sets the error handler for the worker.
-func (w *Worker) SetErrorHandler(fn func(msg *message.Message, err error)) {
+func (w *Worker) SetErrorHandler(fn func(msg *task.Message, err error)) {
 	w.errHandler = fn
+}
+
+func (w *Worker) markAsSuccess(msg *task.Message, out []interface{}) error {
+	w.logger.Debugf("mark task %s as success", msg.ID)
+
+	msg.Out = out
+
+	err := w.backend.UpdateTask(msg, backend.TaskStatusDone)
+	if err != nil {
+		return err
+	}
+
+	if msg.GroupId != "" {
+		// check if all tasks in the group are finished
+		completed, err := w.broker.IsGroupTaskCompleted(msg.GroupId)
+		if err != nil {
+			return err
+		}
+
+		if !completed {
+			return nil
+		}
+
+		w.logger.Debugf("Group task %s all completed.", msg.GroupId)
+
+		// group task all completed, delete group
+		if err := w.broker.DeleteGroup(msg.GroupId); err != nil {
+			return err
+		}
+
+		w.logger.Debugf("Group task %s deleted.", msg.GroupId)
+	}
+
+	return nil
+}
+
+func (w *Worker) markAsFailed(msg *task.Message) error {
+	w.logger.Debugf("mark task %s as failed.", msg.ID)
+	return w.backend.UpdateTask(msg, backend.TaskStatusError)
 }

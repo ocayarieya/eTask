@@ -1,9 +1,9 @@
-package message
+package task
 
 import (
 	"time"
 
-	"github.com/KKKKjl/eTask/utils"
+	"github.com/KKKKjl/eTask/internal/utils"
 )
 
 type IMessage interface {
@@ -27,6 +27,7 @@ type Message struct {
 	Status        int           `json:"status"`
 	Stackback     string        `json:"stackback"`
 	NextJobId     string        `json:"next_job_id"`
+	GroupId       string        `json:"group_id"`
 }
 
 func NewMessage(nameSpace string, args []interface{}, opts ...Option) *Message {
@@ -42,20 +43,4 @@ func NewMessage(nameSpace string, args []interface{}, opts ...Option) *Message {
 	}
 
 	return msg
-}
-
-func (m *Message) GetID() string {
-	return m.ID
-}
-
-func (m *Message) GetStatus() string {
-	return ""
-}
-
-func (m *Message) GetError() error {
-	return nil
-}
-
-func (m *Message) GetTTl() int64 {
-	return m.TTl
 }

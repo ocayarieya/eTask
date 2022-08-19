@@ -3,7 +3,6 @@ package pool
 import (
 	"encoding/json"
 
-	"github.com/KKKKjl/eTask/message"
 	"github.com/go-redis/redis"
 )
 
@@ -20,13 +19,13 @@ func NewPool(client *redis.Client, name string) *Pool {
 	}
 }
 
-func (p *Pool) Add(msg message.Message) error {
-	buf, err := json.Marshal(msg)
+func (p *Pool) Add(key string, val interface{}) error {
+	buf, err := json.Marshal(val)
 	if err != nil {
 		return err
 	}
 
-	return p.client.HSet(p.name, msg.ID, buf).Err()
+	return p.client.HSet(p.name, key, buf).Err()
 }
 
 func (p *Pool) Get(id string) ([]byte, error) {

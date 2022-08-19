@@ -2,13 +2,15 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/KKKKjl/eTask/backend"
 	"github.com/KKKKjl/eTask/broker"
-	"github.com/KKKKjl/eTask/message"
+	"github.com/KKKKjl/eTask/internal/result"
+	"github.com/KKKKjl/eTask/internal/task"
+	"github.com/KKKKjl/eTask/internal/workflow"
 	"github.com/KKKKjl/eTask/worker"
-	"github.com/KKKKjl/eTask/workflow"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type EtaskClient struct {
@@ -27,45 +29,68 @@ func New(b broker.Broker, backend backend.Backend) *EtaskClient {
 	}
 }
 
-func (e *EtaskClient) EnsureAsync(ctx context.Context, name string, args []interface{}, opts ...message.Option) *ResultCmd {
-	msg := message.NewMessage(name, args, opts...)
+func (e *EtaskClient) EnsureAsync(name string, args []interface{}, opts ...task.Option) (*result.AsyncResult, error) {
+	msg := task.NewMessage(name, args, opts...)
 
-	cmd := NewResultCmd("result", ctx, msg)
+	if err := e.broker.Enqueue(*msg); err != nil {
+		return nil, err
+	}
 
-	e.process(cmd)
-	return cmd
+	return result.NewAsyncResult(msg.ID, e.backend), nil
 }
 
-func (e *EtaskClient) PipelineAsync(ctx context.Context, pipline workflow.Pipeliner) *ResultCmd {
-	cmd := NewResultCmd("result", ctx, pipline.Jobs()[0])
+func (e *EtaskClient) PipelineAsync(pipline workflow.Pipeliner) (*result.AsyncResult, error) {
+	var g errgroup.Group
+
+	if err := e.broker.Enqueue(*pipline.Jobs()[0]); err != nil {
+		return nil, err
+	}
 
 	for _, job := range pipline.Jobs()[1:] {
-		if err := e.broker.HSet(*job); err != nil {
-			cmd.err = err
-			return cmd
-		}
+
+		job := job
+		g.Go(func() error {
+			return e.broker.HSet(*job)
+		})
 	}
-	e.process(cmd)
-	return cmd
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	return result.NewAsyncResult(pipline.Jobs()[pipline.Length()-1].ID, e.backend), nil
 }
 
-func (e *EtaskClient) process(cmd *ResultCmd) {
-	if cmd.err != nil {
-		return
+func (e *EtaskClient) GroupAsync(group *workflow.Group) ([]*result.AsyncResult, error) {
+	groupResult := make([]*result.AsyncResult, len(group.Jobs()))
+
+	// create a group
+	if err := e.broker.CreateGroup(group.GroupUUID(), group.JobUUIDS()); err != nil {
+		return nil, err
 	}
 
-	if err := e.broker.Enqueue(*cmd._args[1].(*message.Message)); err != nil {
-		cmd.err = err
-		return
+	var g errgroup.Group
+	for index, job := range group.Jobs() {
+		index := index
+		job := job
+
+		g.Go(func() error {
+			err := e.broker.Enqueue(*job)
+			if err != nil {
+				return err
+			}
+
+			groupResult[index] = result.NewAsyncResult(job.ID, e.backend)
+			return nil
+		})
+
 	}
 
-	buf, err := e.backend.GetResult(cmd._args[0].(context.Context), cmd._args[1].(*message.Message).ID)
-	if err != nil {
-		cmd.err = err
-		return
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
-	cmd.val = string(buf)
+	return groupResult, nil
 }
 
 // register a task to the worker
@@ -81,38 +106,4 @@ func (e *EtaskClient) Run(workerNum int) {
 // stop worker and wait for all tasks to be done
 func (e *EtaskClient) Shutdown() {
 	e.worker.Stop()
-}
-
-type baseCmd struct {
-	_args []interface{}
-	err   error
-}
-
-type ResultCmd struct {
-	baseCmd
-	val string
-}
-
-func NewResultCmd(name string, args ...interface{}) *ResultCmd {
-	return &ResultCmd{
-		baseCmd: baseCmd{
-			_args: args,
-		},
-	}
-}
-
-func (r *ResultCmd) Bytes() []byte {
-	return []byte(r.val)
-}
-
-func (r *ResultCmd) String() string {
-	return r.val
-}
-
-func (r *ResultCmd) Result(val interface{}) error {
-	if r.err != nil {
-		return r.err
-	}
-
-	return json.Unmarshal([]byte(r.val), val)
 }

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/KKKKjl/eTask/message"
+	"github.com/KKKKjl/eTask/internal/task"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -18,7 +18,7 @@ func TestConsume(t *testing.T) {
 	worker := New(nil, nil)
 	worker.Add("sum", sum, nil)
 
-	var msg *message.Message
+	var msg task.Message
 	assert.Nil(json.Unmarshal([]byte("{\"id\":\"2c0f98da-28d4-4a71-831a-c56bcdebe3af\",\"namespace\":\"sum\",\"args\":[1,2],\"created_at\":\"2022-08-16T12:34:11.6716804+08:00\",\"ttl\":0,\"result\":null,\"callback\":null,\"retry\":0,\"execution_time\":0,\"status\":0,\"stackback\":\"\"}"), &msg))
 
 	out, err := worker.consume(msg.NameSpace, msg.NextJobId, msg.Args...)
@@ -36,7 +36,7 @@ func TestCallback(t *testing.T) {
 	worker := New(nil, nil)
 	worker.Add("sum", sum, fn)
 
-	var msg *message.Message
+	var msg task.Message
 	assert.Nil(json.Unmarshal([]byte("{\"id\":\"2c0f98da-28d4-4a71-831a-c56bcdebe3af\",\"namespace\":\"sum\",\"args\":[1,2],\"created_at\":\"2022-08-16T12:34:11.6716804+08:00\",\"ttl\":0,\"result\":null,\"callback\":null,\"retry\":0,\"execution_time\":0,\"status\":0,\"stackback\":\"\"}"), &msg))
 
 	out, err := worker.consume(msg.NameSpace, msg.NextJobId, msg.Args...)

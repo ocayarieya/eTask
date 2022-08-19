@@ -1,9 +1,7 @@
 package backend
 
 import (
-	"context"
-
-	"github.com/KKKKjl/eTask/message"
+	"github.com/KKKKjl/eTask/internal/task"
 )
 
 type TaskStatus int
@@ -24,8 +22,8 @@ const (
 
 type Backend interface {
 	// UpdateTask updates the status of a task.
-	UpdateTask(msg *message.Message, status TaskStatus) error
+	UpdateTask(msg *task.Message, status TaskStatus) error
 
 	// GetResult returns the result of a task.
-	GetResult(ctx context.Context, key string) ([]byte, error)
+	GetResult(key string) ([]byte, error)
 }

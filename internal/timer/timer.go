@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/KKKKjl/eTask/logger"
+	"github.com/KKKKjl/eTask/internal/logger"
 	"github.com/go-redis/redis"
 	"github.com/sirupsen/logrus"
 )

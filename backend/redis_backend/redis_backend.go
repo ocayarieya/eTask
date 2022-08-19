@@ -1,11 +1,9 @@
 package redis_backend
 
 import (
-	"context"
-
 	"github.com/KKKKjl/eTask/backend"
-	"github.com/KKKKjl/eTask/message"
-	"github.com/KKKKjl/eTask/pool"
+	"github.com/KKKKjl/eTask/internal/pool"
+	"github.com/KKKKjl/eTask/internal/task"
 	"github.com/go-redis/redis"
 )
 
@@ -26,13 +24,12 @@ func NewRedisBackend(client *redis.Client) *RedisBackend {
 }
 
 // UpdateTask updates a task result in the backend.
-func (r *RedisBackend) UpdateTask(msg *message.Message, status backend.TaskStatus) error {
+func (r *RedisBackend) UpdateTask(msg *task.Message, status backend.TaskStatus) error {
 	msg.Status = int(status)
-	return r.pool.Add(*msg)
+	return r.pool.Add(msg.ID, msg)
 }
 
 // GetTask returns a task result from the backend asynchronously.
-func (r *RedisBackend) GetResult(ctx context.Context, key string) ([]byte, error) {
-	<-ctx.Done()
+func (r *RedisBackend) GetResult(key string) ([]byte, error) {
 	return r.pool.Get(key)
 }
