@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/KKKKjl/eTask/backend"
+	"github.com/KKKKjl/eTask/broker"
 	"github.com/KKKKjl/eTask/internal/pool"
 	"github.com/KKKKjl/eTask/internal/task"
 	"github.com/go-redis/redis"
@@ -34,7 +35,7 @@ type GroupMetaData struct {
 	JobUUIDS []string `json:"job_uuids"`
 }
 
-func NewRedisBroker(client *redis.Client) *RedisBroker {
+func NewRedisBroker(client *redis.Client) broker.Broker {
 	buckets := make([]*DelayBucket, 0, DEFAULT_BUCKET_COUNT)
 	for i := 0; i < DEFAULT_BUCKET_COUNT; i++ {
 		bucket := NewDelayBucket(client, fmt.Sprintf("%s_%d", "delay_bucket", i))

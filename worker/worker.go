@@ -159,19 +159,23 @@ func (w *Worker) consume(namespace string, nextJobId string, kwargs ...interface
 
 	args := make([]reflect.Value, len(kwargs))
 	for i, v := range kwargs {
-		inValue := reflect.ValueOf(v)
 		requiredType := t.In(i).Kind()
 
 		// NOTE: JSON unmarshal will convert all numeric types to float64.
-		if requiredType == reflect.Int && inValue.Kind() == reflect.Float64 {
-			inValue = reflect.ValueOf(int(v.(float64)))
+		if requiredType == reflect.Int && reflect.TypeOf(v).Kind() == reflect.Float64 {
+			v = int(v.(float64))
 		}
 
-		if inValue.Type().Kind() != requiredType {
-			return nil, fmt.Errorf("argument type mismatch, required %v got %v", t.In(i), inValue.Type())
+		if requiredType == reflect.Float32 && reflect.TypeOf(v).Kind() == reflect.Float64 {
+			v = float32(v.(float64))
 		}
 
-		args[i] = inValue
+		realType := reflect.TypeOf(v).Kind()
+		if realType != requiredType {
+			return nil, fmt.Errorf("argument type mismatch, required %v got %v", t.In(i), realType)
+		}
+
+		args[i] = reflect.ValueOf(v)
 	}
 
 	res, err := w.invoke(funcWorker.fn, funcWorker.cb, args)
@@ -192,7 +196,7 @@ func (w *Worker) consume(namespace string, nextJobId string, kwargs ...interface
 		nextJobArgs = append(nextJobArgs, nextJob.Args...)
 		nextJobArgs = append(nextJobArgs, input...)
 
-		return w.consume(nextJob.NameSpace, nextJob.NextJobId, nextJobArgs)
+		return w.consume(nextJob.NameSpace, nextJob.NextJobId, nextJobArgs...)
 	}
 
 	return w.parseResult(res), nil
@@ -227,28 +231,9 @@ func (w *Worker) invoke(fn interface{}, cb interface{}, args []reflect.Value) ([
 func (w *Worker) parseResult(outs []reflect.Value) []interface{} {
 	result := make([]interface{}, 0, len(outs))
 	for _, v := range outs {
-		result = append(result, w.getRealValue(v))
+		result = append(result, reflect.Indirect(v).Interface())
 	}
 	return result
-}
-
-func (w *Worker) getRealValue(t reflect.Value) interface{} {
-	switch t.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return t.Int()
-	case reflect.String:
-		return t.String()
-	case reflect.Bool:
-		return t.Bool()
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return t.Uint()
-	case reflect.Float32, reflect.Float64:
-		return t.Float()
-	case reflect.Slice, reflect.Map:
-		return t.Interface()
-	default:
-		return t.Interface()
-	}
 }
 
 func (w *Worker) createDelayTask(retryTask *task.Message) {

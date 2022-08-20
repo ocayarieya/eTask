@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/KKKKjl/eTask/internal/task"
@@ -12,18 +11,67 @@ func sum(a, b int) int {
 	return a + b
 }
 
+func multiply(a, b int) int {
+	return a * b
+}
+
+type fakeBroker struct {
+}
+
+func (*fakeBroker) Enqueue(msg task.Message) error {
+	return nil
+}
+
+func (*fakeBroker) Dequeue() (msg *task.Message, err error) {
+	return nil, nil
+}
+
+func (*fakeBroker) HSet(msg task.Message) error {
+	return nil
+}
+
+func (*fakeBroker) HGet(key string) (*task.Message, error) {
+	return &task.Message{
+		NameSpace: "multiply",
+		Args:      []interface{}{4},
+		NextJobId: "",
+	}, nil
+}
+
+func (*fakeBroker) CreateGroup(groupUUID string, uuids []string) error {
+	return nil
+}
+
+func (*fakeBroker) IsGroupTaskCompleted(groupUUID string) (bool, error) {
+	return false, nil
+}
+
+func (*fakeBroker) DeleteGroup(groupUUID string) error {
+	return nil
+}
+
+func (*fakeBroker) Scheme() string {
+	return ""
+}
+
+func (*fakeBroker) Close() error {
+	return nil
+}
+
 func TestConsume(t *testing.T) {
 	assert := assert.New(t)
 
 	worker := New(nil, nil)
 	worker.Add("sum", sum, nil)
 
-	var msg task.Message
-	assert.Nil(json.Unmarshal([]byte("{\"id\":\"2c0f98da-28d4-4a71-831a-c56bcdebe3af\",\"namespace\":\"sum\",\"args\":[1,2],\"created_at\":\"2022-08-16T12:34:11.6716804+08:00\",\"ttl\":0,\"result\":null,\"callback\":null,\"retry\":0,\"execution_time\":0,\"status\":0,\"stackback\":\"\"}"), &msg))
+	job := &task.Message{
+		NameSpace: "sum",
+		Args:      []interface{}{1, 2},
+	}
 
-	out, err := worker.consume(msg.NameSpace, msg.NextJobId, msg.Args...)
+	out, err := worker.consume(job.NameSpace, job.NextJobId, job.Args...)
 	assert.Nil(err)
-	assert.Equal(int64(3), out[0])
+	assert.Equal(int(3), out[0])
 }
 
 func TestCallback(t *testing.T) {
@@ -35,11 +83,30 @@ func TestCallback(t *testing.T) {
 
 	worker := New(nil, nil)
 	worker.Add("sum", sum, fn)
+	job := &task.Message{
+		NameSpace: "sum",
+		Args:      []interface{}{1, 2},
+	}
 
-	var msg task.Message
-	assert.Nil(json.Unmarshal([]byte("{\"id\":\"2c0f98da-28d4-4a71-831a-c56bcdebe3af\",\"namespace\":\"sum\",\"args\":[1,2],\"created_at\":\"2022-08-16T12:34:11.6716804+08:00\",\"ttl\":0,\"result\":null,\"callback\":null,\"retry\":0,\"execution_time\":0,\"status\":0,\"stackback\":\"\"}"), &msg))
-
-	out, err := worker.consume(msg.NameSpace, msg.NextJobId, msg.Args...)
+	out, err := worker.consume(job.NameSpace, job.NextJobId, job.Args...)
 	assert.Nil(err)
-	assert.Equal(int64(4), out[0])
+	assert.Equal(int(4), out[0])
+}
+
+func TestPipline(t *testing.T) {
+	assert := assert.New(t)
+
+	worker := New(&fakeBroker{}, nil)
+	worker.Add("sum", sum, nil)
+	worker.Add("multiply", multiply, nil)
+
+	job := &task.Message{
+		NameSpace: "sum",
+		Args:      []interface{}{1, 2},
+		NextJobId: "2c0f98da-28d4-4a71-831a-c56bcdebe3af",
+	}
+
+	out, err := worker.consume(job.NameSpace, job.NextJobId, job.Args...)
+	assert.Nil(err)
+	assert.Equal(int(12), out[0])
 }
